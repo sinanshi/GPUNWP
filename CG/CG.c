@@ -53,6 +53,11 @@
 #else
   #define REAL float
 #endif
+#define Nx 128
+#define Ny 128
+#define Nz 200
+
+
 
 /* Structure for three dimensional grid size */
 struct N {
@@ -79,19 +84,25 @@ const REAL delta = 0.0;
 const int use_prec=1;
 
 /* save field? */
-const int savefields=1;
+const int savefields=0;
+
+/*preconditioner options:
+ *0-Block Jacobi
+ *1-SOR
+*/
+const int prec_options=1;
 
 /* *********************************************************** *
  * Copy three dimensional field vector
  * y -> x
  * *********************************************************** */
 void copy(const struct N n,
-		  const REAL* x, 
-		  REAL* y) {
+	  const REAL* x, 
+	  REAL* y) {
   unsigned long n_lin = n.x * n.y * n.z;
   unsigned long i;
   for (i = 0; i<n_lin; i++) {
-	  y[i] = x[i];
+    y[i] = x[i];
   } 
 }
 /* *********************************************************** *
@@ -99,9 +110,9 @@ void copy(const struct N n,
  * y -> y + alpha*x
  * *********************************************************** */
 void saxpy(const struct N n,
-		   const REAL alpha, 
-		   const REAL* x, 
-		   REAL* y) {
+	   const REAL alpha, 
+	   const REAL* x, 
+	   REAL* y) {
   unsigned long n_lin = n.x * n.y * n.z;
   unsigned long i;
   for (i = 0; i<n_lin; i++) {
@@ -238,8 +249,8 @@ void apply(const struct N n,
  *                + alpha * (A^{bb}_{ii})^{-1} 
  *                    (b_i - \sum_{j!=i} A^{br}_{ij} y^{(r,(n)}_j)
  *
- * *********************************************************** */
-void prec(const struct N n,
+ * ***********************************************************/
+void prec_SOR(const struct N n,
 		      const REAL* b,
 		      REAL* y) {
   unsigned long n_lin = n.x * n.y * n.z;
@@ -330,6 +341,63 @@ void prec(const struct N n,
   free(r);
 }
 
+
+
+
+/* *********************************************************** *
+
+* Block-Jacobi Preconditioner
+
+* y = M^{-1}.b
+
+* *********************************************************** */
+
+void prec_BJ(const struct N n,
+	      const REAL* b,
+	      REAL* y) {
+  int ix, iy, iz;
+  // Grid spacings in all dirctions
+  REAL hx = 1./n.x;
+  REAL hy = 1./n.y;
+  REAL hz = 1./n.z;
+  REAL hx_inv2 = 1./(hx*hx);
+  REAL hy_inv2 = 1./(hy*hy);
+  REAL hz_inv2 = 1./(hz*hz);
+
+  // Temporary arrays for Thomas algorithm
+  REAL* c = malloc(n.z*sizeof(REAL));
+  REAL* d = malloc(n.z*sizeof(REAL));
+  // Loop over number of relaxation steps
+  for (ix = 0; ix<n.x; ix++) {
+    for (iy = 0; iy<n.y; iy++) {
+      // Do a tridiagonal solve in the vertical direction
+      // STEP 1: Calculate modified coefficients
+      c[0] = (-omega2*lambda2*hz_inv2)
+	/ (delta+2.*omega2*(hx_inv2+hy_inv2+lambda2*hz_inv2));
+      d[0] = b[LINIDX(n, ix,iy,0)]
+	/ (delta+2.*omega2*(hx_inv2+hy_inv2+lambda2*hz_inv2));
+      for (iz = 1; iz<n.z; iz++) {
+        c[iz] = (-omega2*lambda2*hz_inv2) 
+	  / ( (delta+2.*omega2*(hx_inv2+hy_inv2+lambda2*hz_inv2)) 
+	      - (-omega2*lambda2*hz_inv2) * c[iz-1]);
+        d[iz] = (b[LINIDX(n, ix,iy,iz)] 
+                 - (-omega2*lambda2*hz_inv2)*d[iz-1])
+	  / ( (delta+2.*omega2*(hx_inv2+hy_inv2+lambda2*hz_inv2))
+	      - (-omega2*lambda2*hz_inv2)*c[iz-1]);
+      }
+      // STEP 2: Back-substitution.
+      y[LINIDX(n, ix,iy,n.z-1)] = d[n.z-1];
+      for (iz = n.z-2; iz>=0; iz--) {
+        y[LINIDX(n, ix,iy,iz)] 
+          = d[iz] - c[iz]*y[LINIDX(n, ix,iy,iz+1)];
+      }
+    }
+  }
+  free(c);
+  free(d);
+}
+
+
 /* *********************************************************** *
  * RHS for test problem with exact solution 
  * u(x,y,z) = x*(1-x)*y*(1-y)*z*(1-z)
@@ -384,8 +452,12 @@ void cg_solve(const struct N n,
   copy(n,b,r);        // b -> r_0
   apply(n,x,q);       // A.x_0 -> q_0
   saxpy(n,-1.0,q,r);  // r_0 - q_0 = r_0 - A.x_0 -> r_0
-  if (use_prec)
-    prec(n,r,z);        // M^{-1}.r_0 -> z_0
+  if (use_prec){
+    if(prec_options==0)
+      prec_BJ(n,r,z);
+    if(prec_options==1)
+      prec_SOR(n,r,z);
+  } // M^{-1}.r_0 -> z_0
   else
     copy(n,r,z);
   copy(n,z,p);          // r_0 -> p_0
@@ -408,8 +480,12 @@ void cg_solve(const struct N n,
 	  if (verbose == 1)
       printf(" iteration %d ||r|| = %8.3e rho_r = %6.3f\n",k,rnorm,rnorm/rnorm_old);
 	  if (rnorm/rnorm0 < resreduction) break;
-    if (use_prec)
-  	  prec(n,r,z); 
+    if (use_prec){
+      if(prec_options==0)
+	prec_BJ(n,r,z);
+      if(prec_options==1)
+	prec_SOR(n,r,z);
+    } 
     else
       copy(n,r,z);
 	  rznew = dotprod(n,r,z);     // <r_{{k+1},z_{k+1}> -> r2new
@@ -466,9 +542,9 @@ void save_field(const struct N n,
 int main(int argc, char* argv[]) {
   // Ensure that both n.x and n.y can be divided by two to
   // allow red-black ordering in horizontal
-  n.x = 256;
-  n.y = 256;
-  n.z = 64;
+  n.x = Nx;
+  n.y = Ny;
+  n.z = Nz;
   printf(" parameters\n");
   printf(" ==========\n");
   printf(" nx        = %10d\n",n.x);
@@ -478,6 +554,10 @@ int main(int argc, char* argv[]) {
   printf(" lambda2   = %12.6e\n",lambda2);
   printf(" delta     = %12.6e\n",delta);
   printf(" prec      = %d\n",use_prec);
+  if(prec_options==0)
+    printf(" precondtioner=Block Jacobi\n");
+  if(prec_options==1)
+    printf(" preconditoner=SOR\n");
 #ifdef DOUBLE_PRECISION
   printf(" precision = DOUBLE\n");
 #else
