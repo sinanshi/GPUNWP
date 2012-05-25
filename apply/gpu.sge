@@ -1,0 +1,17 @@
+#!/bin/bash --login
+#$ -N a.out
+# Set the job time
+#$ -l h_rt=0:20:0
+# Set the account to charge to (change this to your account)
+#$ -A gz01
+# Shift to the directory that the job was submitted from
+#$ -cwd
+# Send environment with script (needed to get code modules)
+#$ -V
+
+# Load the NAMD module
+module add namd
+
+# Run the job
+namd2 +idlepoll apao1.namd
+
