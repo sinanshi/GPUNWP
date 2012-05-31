@@ -110,12 +110,14 @@ __global__ void gpu_bj(const struct N *n,
   // Temporary arrays for Thomas algorithm
   //cudaMalloc((void**)&c,n->z*sizeof(float));
   //cudaMalloc((void**)&d,n->z*sizeof(float));
-  float c[100],d[100];
+  float c[1000],d[1000];
   //float* c=malloc(n.z*sizeof(float));
   //float* d=malloc(n.z*sizeof(float));
   // Loop over number of relaxation steps
-  for (ix = 0; ix<n->x; ix++) {
-    for (iy = 0; iy<n->y; iy++) {
+  ix=blockIdx.x*BLOCK_SIZE+threadIdx.x;
+  iy=blockIdx.y*BLOCK_SIZE+threadIdx.y;
+  // for (ix = 0; ix<n->x; ix++) {
+  // for (iy = 0; iy<n->y; iy++) {
       // Do a tridiagonal solve in the vertical direction
       // STEP 1: Calculate modified coefficients
       c[0] = (-omega2*lambda2*hz_inv2)/(delta+2.*omega2*(hx_inv2+hy_inv2+lambda2*hz_inv2));
@@ -129,10 +131,8 @@ __global__ void gpu_bj(const struct N *n,
       for (iz = n->z-2; iz>=0; iz--) {
         y[GLINIDX(n, ix,iy,iz)]=d[iz] - c[iz]*y[GLINIDX(n, ix,iy,iz+1)];
       }
-    }
-  }
-  //cudaFree(c);
-  //cudaFree(d);
+      // }
+      // }
 }
 
 
@@ -152,14 +152,15 @@ int main(){
   printf(" omega2    = %12.6e\n",omega2);
   printf(" lambda2   = %12.6e\n",lambda2);
   printf(" delta     = %12.6e\n",delta);
-  //int len=n.x*n.y*n.z;
+  
   float x[len],y[len],gpu_y[len];
   for(i=0;i<len;i++){
-    x[i]=1;
+    x[i]=1.2;
   }
-  
+  double start1=clock();
+  for(i=0;i<1000;i++)
   prec_BJ(n,x,y);
-
+  double end1=clock();
 
 
   N *h_n,*dev_n;
@@ -179,26 +180,26 @@ int main(){
 
   cudaMemcpy(dev_n,h_n,sizeof(N),cudaMemcpyHostToDevice);
   cudaMemcpy(dev_b,x,len*sizeof(float),cudaMemcpyHostToDevice);
-  dim3 dimBlock(BLOCK_SIZE,BLOCK_SIZE,BLOCK_SIZE);
-  dim3 dimGrid(n.x/BLOCK_SIZE,n.y/BLOCK_SIZE,n.z/BLOCK_SIZE);
- 
+  dim3 dimBlock(BLOCK_SIZE,BLOCK_SIZE);
+  dim3 dimGrid(n.x/BLOCK_SIZE,n.y/BLOCK_SIZE);
   gpu_bj<<<dimGrid,dimBlock>>>(dev_n,dev_b,dev_y);
   cudaMemcpy(gpu_y,dev_y,len*sizeof(float),cudaMemcpyDeviceToHost);
   
 
 
   
-  for(i=0;i<len;i++){
+  /*for(i=0;i<len;i++){
     if(y[i]-gpu_y[i]>0.00001)
       printf("%f--%f\n",y[i],gpu_y[i]);
     else
       printf(".");
-  }
+      }*/
+
   cudaFree(dev_n);
   cudaFree(dev_b);
   cudaFree(dev_y);
   
-
+  printf("cpu time = %f\n",(double)(end1-start1)/CLOCKS_PER_SEC*1000000);
 
   return(0);
 }
