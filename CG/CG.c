@@ -54,8 +54,8 @@
   #define REAL float
 #endif
 #define Nx 128
-#define Ny 128
-#define Nz 200
+#define Ny 128*22
+#define Nz 128
 
 
 
@@ -90,7 +90,7 @@ const int savefields=0;
  *0-Block Jacobi
  *1-SOR
 */
-const int prec_options=1;
+const int prec_options=0;
 
 /* *********************************************************** *
  * Copy three dimensional field vector
@@ -446,7 +446,11 @@ void cg_solve(const struct N n,
   REAL* q = malloc(n_lin*sizeof(REAL));
   REAL alpha, beta;
   REAL rnorm, rnorm0, rnorm_old,rz, rznew;
-  clock_t start, end;
+  clock_t start, end,start_a,end_a,start_p,end_p;
+  double atime,ptime;
+  atime=0;
+  ptime=0;
+
   // Initialise
   start = clock();
   copy(n,b,r);        // b -> r_0
@@ -462,46 +466,63 @@ void cg_solve(const struct N n,
     copy(n,r,z);
   copy(n,z,p);          // r_0 -> p_0
   rz = dotprod(n,r,z);
-	rnorm0 = sqrt(norm2(n,r));   // ||r_{0}||^2 rnorm
+  rnorm0 = sqrt(norm2(n,r));   // ||r_{0}||^2 rnorm
   rnorm_old = rnorm0;
   end = clock();
   if (verbose == 1)
     printf("CG initialisation time = %12.8f s\n",
-      ((double)(end-start))/CLOCKS_PER_SEC); 
+	   ((double)(end-start))/CLOCKS_PER_SEC); 
   if (verbose == 1)
     printf("Initial residual = %8.4e\n",rnorm0);
   start = clock();
+
+
   for (k=1; k<=maxiter; k++) {
+    start_a=clock();
     apply(n,p,q);               // A.p_k -> q_k
+    end_a=clock();
+    atime+=(double)(end_a-start_a);
+   
     alpha = rz/dotprod(n,p,q);  // alpha_k = <r_k,z_k> / <p_k,A.p_k>
-	  saxpy(n,alpha,p,x);         // x_k + alpha_k * p_k -> x_{k+1}
-	  saxpy(n,-alpha,q,r);        // r_k - alpha_k * A.p_k -> r_{k+1}
-	  rnorm = sqrt(norm2(n,r));   // ||r_{k+1}||^2 rnorm
-	  if (verbose == 1)
-      printf(" iteration %d ||r|| = %8.3e rho_r = %6.3f\n",k,rnorm,rnorm/rnorm_old);
-	  if (rnorm/rnorm0 < resreduction) break;
+    saxpy(n,alpha,p,x);         // x_k + alpha_k * p_k -> x_{k+1}
+    saxpy(n,-alpha,q,r);        // r_k - alpha_k * A.p_k -> r_{k+1}
+    rnorm = sqrt(norm2(n,r));   // ||r_{k+1}||^2 rnorm
+    if (verbose == 1){
+      //printf(" iteration %d ||r|| = %8.3e rho_r = %6.3f\n",k,rnorm,rnorm/rnorm_old);
+    }
+    if (rnorm/rnorm0 < resreduction) break;
+    
     if (use_prec){
-      if(prec_options==0)
+      if(prec_options==0){
+	start_p=clock();
 	prec_BJ(n,r,z);
-      if(prec_options==1)
+	end_p=clock();
+      }
+      if(prec_options==1){
+	start_p=clock();
 	prec_SOR(n,r,z);
+	end_p=clock();
+      }
+      ptime+=(double)end_p-start_p;
     } 
     else
       copy(n,r,z);
-	  rznew = dotprod(n,r,z);     // <r_{{k+1},z_{k+1}> -> r2new
-	  beta = rznew/rz;            // beta_k = <r_{k+1},z_{k+1}> / <r_k,z_k>
+    rznew = dotprod(n,r,z);     // <r_{{k+1},z_{k+1}> -> r2new
+    beta = rznew/rz;            // beta_k = <r_{k+1},z_{k+1}> / <r_k,z_k>
     saypx(n,beta,z,p);          // z_{k+1} + beta_k * p_k -> p_{k+1}
-	  rz = rznew;                 // update <r_k, z_k> -> <r_{k+1},z_{k+1}>
+    rz = rznew;                 // update <r_k, z_k> -> <r_{k+1},z_{k+1}>
     rnorm_old = rnorm;
   }
   end = clock();
   if (verbose == 1) {
+    double solutiontime;
+    solutiontime=(double)(end-start)/CLOCKS_PER_SEC;
     printf("Number of iterations = %4d\n",k);
     printf("rho_{avg}            = %6.3f\n",pow(rnorm/rnorm0,1./k));
-    printf("Solution time        = %12.4f s\n",
-      ((double)(end-start))/CLOCKS_PER_SEC); 
-    printf("Time per iteration   = %12.8f s\n",
-      ((double)(end-start)/k)/CLOCKS_PER_SEC); 
+    printf("Solution time        = %12.4f s\n",solutiontime);
+    printf("Apply time           = %12.4f s(%.2f %%)\n",atime/CLOCKS_PER_SEC,atime*100/CLOCKS_PER_SEC/solutiontime); 
+    printf("Preconditoiner  time = %12.4f s(%.2f %%)\n",ptime/CLOCKS_PER_SEC,ptime*100/CLOCKS_PER_SEC/solutiontime); 
+    printf("Time per iteration   = %12.8f s\n", solutiontime/k); 
   }
   free(r);
   free(z);
@@ -542,9 +563,11 @@ void save_field(const struct N n,
 int main(int argc, char* argv[]) {
   // Ensure that both n.x and n.y can be divided by two to
   // allow red-black ordering in horizontal
-  n.x = Nx;
-  n.y = Ny;
-  n.z = Nz;
+  int k;
+  for(k=0;k<25;k++){
+    n.x = 128*(k+1);
+    n.y = 128;
+    n.z = 128;
   printf(" parameters\n");
   printf(" ==========\n");
   printf(" nx        = %10d\n",n.x);
@@ -579,7 +602,7 @@ int main(int argc, char* argv[]) {
   REAL x_,y_,z_;
   // Set initial solution to 0
   for (i=0; i<n_lin; i++) {
-    x[i] = 0.0;
+    x[i] = 0;
   }
   // Initialise RHS
   for (ix=0; ix<n.x; ix++) {
@@ -598,7 +621,6 @@ int main(int argc, char* argv[]) {
   }
   /* solve equation */
   cg_solve(n,b,x,resreduction);
-
 #ifdef TEST
   /* If we are solving the test problem, calculate the difference
    * between the exact solution, given by utest(), and the numerical
@@ -645,5 +667,7 @@ int main(int argc, char* argv[]) {
 #ifdef TEST
   free(error);
 #endif
+  }
   return(0);
+  
 }
