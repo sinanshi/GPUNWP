@@ -42,56 +42,26 @@
 #include<stdio.h>
 #include<stdlib.h>
 #include<math.h>
+#include"CG.h"
 
-/* Macro for mapping three dimensional index (ix,iy,iz) to 
- * linear index. The vertical index (z) is running fastest so 
- * that vertical columns are always kept together in memory.
- */
-#define LINIDX(n, ix,iy,iz) ((n.z)*(n.y)*(ix) + (n.z)*(iy) + (iz))
-#ifdef DOUBLE_PRECISON
-  #define REAL double
-#else
-  #define REAL float
-#endif
 
-/* Structure for three dimensional grid size */
-struct N {
-  int x;   // Number of grid points in x-direction
-  int y;   // Number of grid points in y-direction
-  int z;   // Number of grid points in z-direction
-};
 
-/* Number of gridpoints */
-struct N n;
+//int gpu_apply(const N n,const REAL *x, REAL *y);
 
-/* Relative residual reduction target */
-const REAL resreduction = 1.0e-5;
 
-/* verbosity level */
-const int verbose = 1;
-
-/* parameters of PDE */
-const REAL lambda2 = 1e4;
-const REAL omega2 = 1.0;
-const REAL delta = 0.0;
-
-/* Use preconditioner? */
-const int use_prec=1;
-
-/* save field? */
-const int savefields=1;
+N n;
 
 /* *********************************************************** *
  * Copy three dimensional field vector
  * y -> x
  * *********************************************************** */
 void copy(const struct N n,
-		  const REAL* x, 
-		  REAL* y) {
+	  const REAL* x, 
+	  REAL* y) {
   unsigned long n_lin = n.x * n.y * n.z;
   unsigned long i;
   for (i = 0; i<n_lin; i++) {
-	  y[i] = x[i];
+    y[i] = x[i];
   } 
 }
 /* *********************************************************** *
@@ -99,9 +69,9 @@ void copy(const struct N n,
  * y -> y + alpha*x
  * *********************************************************** */
 void saxpy(const struct N n,
-		   const REAL alpha, 
-		   const REAL* x, 
-		   REAL* y) {
+	   const REAL alpha, 
+	   const REAL* x, 
+	   REAL* y) {
   unsigned long n_lin = n.x * n.y * n.z;
   unsigned long i;
   for (i = 0; i<n_lin; i++) {
@@ -238,8 +208,8 @@ void apply(const struct N n,
  *                + alpha * (A^{bb}_{ii})^{-1} 
  *                    (b_i - \sum_{j!=i} A^{br}_{ij} y^{(r,(n)}_j)
  *
- * *********************************************************** */
-void prec(const struct N n,
+ * ***********************************************************/
+void prec_SOR(const struct N n,
 		      const REAL* b,
 		      REAL* y) {
   unsigned long n_lin = n.x * n.y * n.z;
@@ -256,9 +226,9 @@ void prec(const struct N n,
   REAL hx_inv2 = 1./(hx*hx);
   REAL hy_inv2 = 1./(hy*hy);
   REAL hz_inv2 = 1./(hz*hz);
-  // Temporary arrays for Thomas algorithm
-                                         // REAL* c = malloc(n.z*sizeof(REAL));
-                                         // REAL* d = malloc(n.z*sizeof(REAL));
+  
+
+
   REAL* c;
   REAL* d;
   cudaMallocHost(&c, n.z*sizeof(REAL));
@@ -271,6 +241,8 @@ void prec(const struct N n,
   int color;
   REAL *r;                               // = malloc(n_lin*sizeof(REAL));
   cudaMallocHost(&r,n_lin*sizeof(REAL));
+
+
   // Initialise y to zero
   for (i=0; i<n_lin; i++) y[i] = 0.0;
   color=0; // Start with relaxing red lines 
@@ -336,6 +308,65 @@ void prec(const struct N n,
   cudaFree(r);
 }
 
+
+
+
+/* *********************************************************** *
+
+* Block-Jacobi Preconditioner
+
+* y = M^{-1}.b
+
+* *********************************************************** */
+
+void prec_BJ(const struct N n,
+	      const REAL* b,
+	      REAL* y) {
+  int ix, iy, iz;
+  // Grid spacings in all dirctions
+  REAL hx = 1./n.x;
+  REAL hy = 1./n.y;
+  REAL hz = 1./n.z;
+  REAL hx_inv2 = 1./(hx*hx);
+  REAL hy_inv2 = 1./(hy*hy);
+  REAL hz_inv2 = 1./(hz*hz);
+  
+  // Temporary arrays for Thomas algorithm
+  REAL* c; //= malloc(n.z*sizeof(REAL));
+  REAL* d;// = malloc(n.z*sizeof(REAL));
+  cudaMallocHost(&c,n.z*sizeof(REAL));
+  cudaMallocHost(&d,n.z*sizeof(REAL));
+  // Loop over number of relaxation steps
+  for (ix = 0; ix<n.x; ix++) {
+    for (iy = 0; iy<n.y; iy++) {
+      // Do a tridiagonal solve in the vertical direction
+      // STEP 1: Calculate modified coefficients
+      c[0] = (-omega2*lambda2*hz_inv2)
+	/ (delta+2.*omega2*(hx_inv2+hy_inv2+lambda2*hz_inv2));
+      d[0] = b[LINIDX(n, ix,iy,0)]
+	/ (delta+2.*omega2*(hx_inv2+hy_inv2+lambda2*hz_inv2));
+      for (iz = 1; iz<n.z; iz++) {
+        c[iz] = (-omega2*lambda2*hz_inv2) 
+	  / ( (delta+2.*omega2*(hx_inv2+hy_inv2+lambda2*hz_inv2)) 
+	      - (-omega2*lambda2*hz_inv2) * c[iz-1]);
+        d[iz] = (b[LINIDX(n, ix,iy,iz)] 
+                 - (-omega2*lambda2*hz_inv2)*d[iz-1])
+	  / ( (delta+2.*omega2*(hx_inv2+hy_inv2+lambda2*hz_inv2))
+	      - (-omega2*lambda2*hz_inv2)*c[iz-1]);
+      }
+      // STEP 2: Back-substitution.
+      y[LINIDX(n, ix,iy,n.z-1)] = d[n.z-1];
+      for (iz = n.z-2; iz>=0; iz--) {
+        y[LINIDX(n, ix,iy,iz)] 
+          = d[iz] - c[iz]*y[LINIDX(n, ix,iy,iz+1)];
+      }
+    }
+  }
+  cudaFree(c);
+  cudaFree(d);
+}
+
+
 /* *********************************************************** *
  * RHS for test problem with exact solution 
  * u(x,y,z) = x*(1-x)*y*(1-y)*z*(1-z)
@@ -375,70 +406,129 @@ void cg_solve(const struct N n,
               const REAL* b, 
     	        REAL* x,
               REAL resreduction) {
-  unsigned int maxiter = 1000;
-  unsigned int k;
+  unsigned int maxiter = 5;
+  unsigned int k; 
   unsigned long n_lin = n.x*n.y*n.z;
-  REAL* r;                                           // = malloc(n_lin*sizeof(REAL));
+  REAL* r;// = malloc(n_lin*sizeof(REAL));
   REAL* z;// = malloc(n_lin*sizeof(REAL));
   REAL* p;// = malloc(n_lin*sizeof(REAL));
-  REAL* q;// = malloc(n_lin*sizeof(REAL));
+  REAL* q;// = malloc(n_lin*sizeof(REAL)); 
   cudaMallocHost(&r, n_lin*sizeof(REAL));
   cudaMallocHost(&z, n_lin*sizeof(REAL));
   cudaMallocHost(&p, n_lin*sizeof(REAL));
   cudaMallocHost(&q, n_lin*sizeof(REAL));
-  
   REAL alpha, beta;
   REAL rnorm, rnorm0, rnorm_old,rz, rznew;
-  clock_t start, end;
+  clock_t start, end,start_a,end_a,start_p,end_p,start_s,end_s,start_d,end_d,start_n,end_n;
+  double atime,ptime,stime,dtime,ntime;
+  atime=0;
+  ptime=0;
+  stime=0;
+  dtime=0;
+  ntime=0;
+
+
   // Initialise
   start = clock();
-  copy(n,b,r);        // b -> r_0
+  copy(n,b,r);// b -> r_0
   apply(n,x,q);       // A.x_0 -> q_0
   saxpy(n,-1.0,q,r);  // r_0 - q_0 = r_0 - A.x_0 -> r_0
-  if (use_prec)
-    prec(n,r,z);        // M^{-1}.r_0 -> z_0
+  if (use_prec){
+    if(prec_options==0)
+      prec_BJ(n,r,z);
+    if(prec_options==1)
+      prec_SOR(n,r,z);
+  } // M^{-1}.r_0 -> z_0
   else
     copy(n,r,z);
   copy(n,z,p);          // r_0 -> p_0
   rz = dotprod(n,r,z);
-	rnorm0 = sqrt(norm2(n,r));   // ||r_{0}||^2 rnorm
+  rnorm0 = sqrt(norm2(n,r));   // ||r_{0}||^2 rnorm
   rnorm_old = rnorm0;
   end = clock();
   if (verbose == 1)
     printf("CG initialisation time = %12.8f s\n",
-      ((double)(end-start))/CLOCKS_PER_SEC); 
+	   ((double)(end-start))/CLOCKS_PER_SEC); 
   if (verbose == 1)
     printf("Initial residual = %8.4e\n",rnorm0);
   start = clock();
+
+
   for (k=1; k<=maxiter; k++) {
-    apply(n,p,q);               // A.p_k -> q_k
+    
+
+    start_a=clock();
+    gpu_apply(n,p,q);               // A.p_k -> q_k
+    end_a=clock();
+    atime+=(double)(end_a-start_a);
+   
+    start_d=clock();
     alpha = rz/dotprod(n,p,q);  // alpha_k = <r_k,z_k> / <p_k,A.p_k>
-	  saxpy(n,alpha,p,x);         // x_k + alpha_k * p_k -> x_{k+1}
-	  saxpy(n,-alpha,q,r);        // r_k - alpha_k * A.p_k -> r_{k+1}
-	  rnorm = sqrt(norm2(n,r));   // ||r_{k+1}||^2 rnorm
-	  if (verbose == 1)
+    end_d=clock();
+    dtime+=(double)(end_d-start_d);
+
+    start_s=clock();
+    saxpy(n,alpha,p,x);         // x_k + alpha_k * p_k -> x_{k+1}
+    saxpy(n,-alpha,q,r);        // r_k - alpha_k * A.p_k -> r_{k+1}
+    end_s=clock();
+    stime+=(double)(end_s-start_s);
+
+    start_n=clock();
+    rnorm = sqrt(norm2(n,r));   // ||r_{k+1}||^2 rnorm
+    end_n=clock();
+    ntime+=(double)(end_n-start_n);
+ 
+    if (verbose == 1){
       printf(" iteration %d ||r|| = %8.3e rho_r = %6.3f\n",k,rnorm,rnorm/rnorm_old);
-	  if (rnorm/rnorm0 < resreduction) break;
-    if (use_prec)
-  	  prec(n,r,z); 
+    }
+    if (rnorm/rnorm0 < resreduction) break;
+    
+    if (use_prec){
+      if(prec_options==0){
+	start_p=clock();
+	prec_BJ(n,r,z);
+	end_p=clock();
+      }
+      if(prec_options==1){
+	start_p=clock();
+	prec_SOR(n,r,z);
+	end_p=clock();
+      }
+      ptime+=(double)end_p-start_p;//calculate preconditioner time
+    } 
     else
       copy(n,r,z);
-	  rznew = dotprod(n,r,z);     // <r_{{k+1},z_{k+1}> -> r2new
-	  beta = rznew/rz;            // beta_k = <r_{k+1},z_{k+1}> / <r_k,z_k>
+
+    start_d=clock();    
+    rznew = dotprod(n,r,z);     // <r_{{k+1},z_{k+1}> -> r2new
+    end_d=clock();
+    dtime+=(double)(end_d-start_d);
+
+    beta = rznew/rz;            // beta_k = <r_{k+1},z_{k+1}> / <r_k,z_k>
+
+    start_s=clock();
     saypx(n,beta,z,p);          // z_{k+1} + beta_k * p_k -> p_{k+1}
-	  rz = rznew;                 // update <r_k, z_k> -> <r_{k+1},z_{k+1}>
+    end_s=clock();
+    stime+=(double)(end_s-start_s);
+
+    rz = rznew;                 // update <r_k, z_k> -> <r_{k+1},z_{k+1}>
     rnorm_old = rnorm;
   }
-  end = clock();
+  end = clock();//timer:end of whole solver
   if (verbose == 1) {
+    double solutiontime;
+    solutiontime=(double)(end-start)/CLOCKS_PER_SEC;
     printf("Number of iterations = %4d\n",k);
-    // printf("rho_{avg}            = %6.3f\n",pow(rnorm/rnorm0,1./k));
-    printf("Solution time        = %12.4f s\n",
-      ((double)(end-start))/CLOCKS_PER_SEC); 
-    printf("Time per iteration   = %12.8f s\n",
-      ((double)(end-start)/k)/CLOCKS_PER_SEC); 
+     printf("rho_{avg}            = %6.3f\n",pow((double)rnorm/rnorm0,(double)1./k));
+    printf("Solution time        = %12.4f s\n",solutiontime);
+    printf("Apply time           = %12.4f s(%.2f %%)\n",atime/CLOCKS_PER_SEC,atime*100/CLOCKS_PER_SEC/solutiontime); 
+    printf("Preconditoiner  time = %12.4f s(%.2f %%)\n",ptime/CLOCKS_PER_SEC,ptime*100/CLOCKS_PER_SEC/solutiontime);
+    printf("saxpy  time = %12.4f s(%.2f %%)\n",stime/CLOCKS_PER_SEC,stime*100/CLOCKS_PER_SEC/solutiontime); 
+    printf("dotprod   time = %12.4f s(%.2f %%)\n",dtime/CLOCKS_PER_SEC,dtime*100/CLOCKS_PER_SEC/solutiontime); 
+    printf("normalize time = %12.4f s(%.2f %%)\n",ntime/CLOCKS_PER_SEC,ntime*100/CLOCKS_PER_SEC/solutiontime); 
+
+    printf("Time per iteration   = %12.8f s\n", solutiontime/k); 
   }
-  
   cudaFree(r);
   cudaFree(z);
   cudaFree(p);
@@ -478,9 +568,11 @@ void save_field(const struct N n,
 int main(int argc, char* argv[]) {
   // Ensure that both n.x and n.y can be divided by two to
   // allow red-black ordering in horizontal
-  n.x = 256;
-  n.y = 256;
-  n.z = 64;
+  // int k;
+   // for(k=0;k<30;k++){
+  n.x = 150;//+64*k;
+  n.y = 150;//+64*k;
+  n.z = 50;
   printf(" parameters\n");
   printf(" ==========\n");
   printf(" nx        = %10d\n",n.x);
@@ -490,54 +582,55 @@ int main(int argc, char* argv[]) {
   printf(" lambda2   = %12.6e\n",lambda2);
   printf(" delta     = %12.6e\n",delta);
   printf(" prec      = %d\n",use_prec);
+    if(prec_options==0)
+      printf(" precondtioner=Block Jacobi\n");
+    if(prec_options==1)
+      printf(" preconditoner=SOR\n");
 #ifdef DOUBLE_PRECISION
-  printf(" precision = DOUBLE\n");
+    printf(" precision = DOUBLE\n");
 #else
-  printf(" precision = SINGLE\n");
+    printf(" precision = SINGLE\n");
 #endif
 #ifdef TEST
-  printf(" solving TEST problem\n");
+    printf(" solving TEST problem\n");
 #endif
-  unsigned long i;
-  int ix, iy, iz;
+    unsigned long i;
+    int ix, iy, iz;
   unsigned int n_lin = n.x*n.y*n.z;
-  REAL *x;                       // = malloc(n_lin*sizeof(REAL));
-  cudaMallocHost(&x, n_lin*sizeof(REAL));
+  REAL *x;
+  cudaMallocHost(&x, n_lin*sizeof(REAL));  
 
 #ifdef TEST
   REAL *error;// = malloc(n_lin*sizeof(REAL));
   cudaMallocHost(&error, n_lin*sizeof(REAL));
-
   REAL L2error;
 #endif
   REAL *r; //= malloc(n_lin*sizeof(REAL));
   REAL *b; //= malloc(n_lin*sizeof(REAL));
   cudaMallocHost(&r, n_lin*sizeof(REAL));
   cudaMallocHost(&b, n_lin*sizeof(REAL));
-
   REAL x_,y_,z_;
   // Set initial solution to 0
   for (i=0; i<n_lin; i++) {
-    x[i] = 0.0;
+    x[i] = 0;
   }
   // Initialise RHS
   for (ix=0; ix<n.x; ix++) {
     for (iy=0; iy<n.y; iy++) {
       for (iz=0; iz<n.z; iz++) {
-        x_ = (ix+0.5)/n.x;
+	x_ = (ix+0.5)/n.x;
         y_ = (iy+0.5)/n.y;
         z_ = (iz+0.5)/n.z;
 #ifdef TEST
-        b[LINIDX(n,ix,iy,iz)] = frhstest(x_,y_,z_);
+	b[LINIDX(n,ix,iy,iz)] = frhstest(x_,y_,z_);
 #else
-        b[LINIDX(n,ix,iy,iz)] = frhs(x_,y_,z_);
+	b[LINIDX(n,ix,iy,iz)] = frhs(x_,y_,z_);
 #endif
       }
     }
   }
   /* solve equation */
   cg_solve(n,b,x,resreduction);
-  
 #ifdef TEST
   /* If we are solving the test problem, calculate the difference
    * between the exact solution, given by utest(), and the numerical
@@ -546,7 +639,7 @@ int main(int argc, char* argv[]) {
    * grid points in one direction. Assuming that the numerical
    * solution is sufficiently exact, this will be a measure of the 
    * discretisation error.
-   */ 
+   */
   // Initialise error
   for (ix=0; ix<n.x; ix++) {
     for (iy=0; iy<n.y; iy++) {
@@ -568,7 +661,7 @@ int main(int argc, char* argv[]) {
   printf("||error||_2       = %8.4e\n",L2error);
   printf("log_2 ||error||_2 = %8.4f\n",log(L2error)/log(2.));
 #endif
-  
+
   /* Save solution and resiudual */
   if (savefields) {
     save_field(n,x,"solution.dat");
@@ -584,5 +677,7 @@ int main(int argc, char* argv[]) {
 #ifdef TEST
   cudaFree(error);
 #endif
+  // }
   return(0);
+  
 }
