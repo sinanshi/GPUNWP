@@ -41,7 +41,7 @@ const REAL omega2 = 1.0;
 const REAL delta = 0.0;
 
 /* Use preconditioner? */
-const int use_prec=1;
+const int use_prec=0;
 
 /* save field? */
 const int savefields=0;
@@ -60,8 +60,11 @@ const int prec_options=1;
 #define LINIDX(n, ix,iy,iz) ((n.z)*(n.y)*(ix) + (n.z)*(iy) + (iz))
 #define GLINIDX(n, ix,iy,iz) ((n->z)*(n->y)*(ix) + (n->z)*(iy) + (iz))
 
-#define BLOCK_SIZE 5
+#define BLOCK_SIZE 10
 
 
-int gpu_apply(const N n,const REAL *x, REAL *y);
+int gpu_apply(const N *n,const REAL *dev_x, REAL *dev_y);
+void apply(const struct N, const REAL *x, REAL *y);
 
+int gpu_bj(const N *n, const REAL *dev_b, REAL *dev_y );
+int gpu_solver(const struct N n, const REAL *b, const REAL* x, REAL resreduction);

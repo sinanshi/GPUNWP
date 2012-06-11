@@ -42,6 +42,7 @@
 #include<stdio.h>
 #include<stdlib.h>
 #include<math.h>
+#include<cublas_v2.h>
 #include"CG.h"
 
 
@@ -406,7 +407,7 @@ void cg_solve(const struct N n,
               const REAL* b, 
     	        REAL* x,
               REAL resreduction) {
-  unsigned int maxiter = 5;
+  unsigned int maxiter = 1000;
   unsigned int k; 
   unsigned long n_lin = n.x*n.y*n.z;
   REAL* r;// = malloc(n_lin*sizeof(REAL));
@@ -417,6 +418,8 @@ void cg_solve(const struct N n,
   cudaMallocHost(&z, n_lin*sizeof(REAL));
   cudaMallocHost(&p, n_lin*sizeof(REAL));
   cudaMallocHost(&q, n_lin*sizeof(REAL));
+  
+
   REAL alpha, beta;
   REAL rnorm, rnorm0, rnorm_old,rz, rznew;
   clock_t start, end,start_a,end_a,start_p,end_p,start_s,end_s,start_d,end_d,start_n,end_n;
@@ -455,10 +458,10 @@ void cg_solve(const struct N n,
 
 
   for (k=1; k<=maxiter; k++) {
-    
 
+    
     start_a=clock();
-    gpu_apply(n,p,q);               // A.p_k -> q_k
+    apply(n,p,q);               // A.p_k -> q_k
     end_a=clock();
     atime+=(double)(end_a-start_a);
    
@@ -570,9 +573,9 @@ int main(int argc, char* argv[]) {
   // allow red-black ordering in horizontal
   // int k;
    // for(k=0;k<30;k++){
-  n.x = 150;//+64*k;
-  n.y = 150;//+64*k;
-  n.z = 50;
+  n.x = 100;//+64*k;
+  n.y = 100;//+64*k;
+  n.z = 100;
   printf(" parameters\n");
   printf(" ==========\n");
   printf(" nx        = %10d\n",n.x);
@@ -613,24 +616,30 @@ int main(int argc, char* argv[]) {
   // Set initial solution to 0
   for (i=0; i<n_lin; i++) {
     x[i] = 0;
+    
   }
-  // Initialise RHS
+  
+  
+
+  
+  //Initialise RHS
   for (ix=0; ix<n.x; ix++) {
     for (iy=0; iy<n.y; iy++) {
       for (iz=0; iz<n.z; iz++) {
-	x_ = (ix+0.5)/n.x;
+		x_ = (ix+0.5)/n.x;
         y_ = (iy+0.5)/n.y;
         z_ = (iz+0.5)/n.z;
 #ifdef TEST
 	b[LINIDX(n,ix,iy,iz)] = frhstest(x_,y_,z_);
 #else
 	b[LINIDX(n,ix,iy,iz)] = frhs(x_,y_,z_);
-#endif
+	#endif
+       
       }
     }
-  }
+    }*/
   /* solve equation */
-  cg_solve(n,b,x,resreduction);
+  gpu_solver(n,b,x,resreduction);
 #ifdef TEST
   /* If we are solving the test problem, calculate the difference
    * between the exact solution, given by utest(), and the numerical
