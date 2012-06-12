@@ -105,11 +105,11 @@ __global__ void gpu_apply(const N *n, const float*x, float *y){//(const N *n, co
 }
 
 int main(){
-  n.x = 20;
-  n.y = 100;
-  n.z = 20;
+  n.x = 200;
+  n.y = 20;
+  n.z = 50;
   int i;  
-  
+  clock_t start1, end1;//start2,end2;  
   printf(" parameters\n");
   printf(" ==========\n");
   printf(" nx        = %10d\n",n.x);
@@ -119,12 +119,17 @@ int main(){
   printf(" lambda2   = %12.6e\n",lambda2);
   printf(" delta     = %12.6e\n",delta);
   int len=n.x*n.y*n.z;
-  float x[len],y[len],gpu_y[len];
+  //cudaMallocHost  
+float x[len],y[len],gpu_y[len];
   for(i=0;i<len;i++){
     x[i]=1;
   }
   
+  start1=clock();
+  //for(i=0;i<1;i++)
   apply(n,x,y);
+  end1=clock();
+
   N *h_n,*dev_n;
   h_n=(struct N*)malloc(sizeof(N));
 
@@ -134,7 +139,8 @@ int main(){
   
   float *dev_x, *dev_y;
 
-
+  //start2=clock();
+  
   cudaMalloc((void**)&dev_n,sizeof(N));
   cudaMalloc((void**)&dev_x,len*sizeof(float));
   cudaMalloc((void**)&dev_y,len*sizeof(float));
@@ -145,27 +151,20 @@ int main(){
   dim3 dimBlock(BLOCK_SIZE,BLOCK_SIZE,BLOCK_SIZE);
   dim3 dimGrid(n.x/BLOCK_SIZE,n.y/BLOCK_SIZE,n.z/BLOCK_SIZE);
  
+  //for(i=0;i<100;i++)
   gpu_apply<<<dimGrid,dimBlock>>>(dev_n,dev_x,dev_y);
   cudaMemcpy(gpu_y,dev_y,len*sizeof(float),cudaMemcpyDeviceToHost);
-  
-  
-
-
-
-
-
-
-
-
-
-for(i=0;i<len;i++){
+    
+  //end2=clock();
+ 
+  /*for(i=0;i<len;i++){
    if(abs(gpu_y[i]-y[i])>1)
      printf("x");
     else
      printf(".");
    //printf("%.2f----%.2f\n",gpu_y[i],y[i]);
-   }
-
+   }*/
+  
   //printf("x=%d\n",h_n->x);
   
 // int count;
@@ -176,6 +175,10 @@ for(i=0;i<len;i++){
   cudaFree(dev_x);
   cudaFree(dev_y);
  
+  printf("CPU apply: %f us\n",((double)(end1-start1))/CLOCKS_PER_SEC*1000000);
+  //printf("GPU apply: %12.8f\n",((double)(end2-start2))/CLOCKS_PER_SEC);
+
+
 
   return(0);
 }
